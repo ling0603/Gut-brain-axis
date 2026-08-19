@@ -1,0 +1,95 @@
+#!/bin/bash
+#PBS -N bee_tag_d4_int1
+#PBS -l select=1:ncpus=32:mem=64gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -o /rds/general/user/xz2822/home/bee_tag_prediction/logs/
+
+set -euo pipefail
+
+PROJECT_DIR="/rds/general/user/xz2822/home/bee_tag_prediction"
+WORKING_DIR="${PROJECT_DIR}/actual_data/day_4"
+
+# Separate output folder so interval-5 results are not detected and skipped.
+OUTPUT_ROOT="${WORKING_DIR}/bee_tag_model_outputs_1interval"
+
+MODEL="${PROJECT_DIR}/model/best_model.pth"
+ENV_DIR="/rds/general/user/xz2822/home/miniforge3/envs/bee_tag_model"
+
+N_WORKERS=8
+LIMIT_VIDEOS=8
+
+export CPU_THREADS_PER_WORKER=4
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+export OPENBLAS_NUM_THREADS=4
+export NUMEXPR_NUM_THREADS=4
+
+FRAME_INTERVAL=1
+VIDEO_CROP_SIZE=100
+LIKELIHOOD_THRESHOLD=0.6
+CONFIDENCE_THRESHOLD=0.5
+BATCH_SIZE=64
+MAX_FRAMES=""
+
+mkdir -p "${PROJECT_DIR}/logs" "${OUTPUT_ROOT}"
+
+source /rds/general/user/xz2822/home/miniforge3/etc/profile.d/conda.sh
+conda activate "${ENV_DIR}"
+
+cd "${PROJECT_DIR}"
+
+echo "============================================================"
+echo "Job ID:                   ${PBS_JOBID}"
+echo "Day:                      4"
+echo "Working directory:        ${WORKING_DIR}"
+echo "Output directory:         ${OUTPUT_ROOT}"
+echo "Frame interval:           ${FRAME_INTERVAL}"
+echo "Workers:                  ${N_WORKERS}"
+echo "CPU threads per worker:   ${CPU_THREADS_PER_WORKER}"
+echo "Start:                    $(date)"
+echo "============================================================"
+
+if [[ ! -d "${WORKING_DIR}" ]]; then
+    echo "ERROR: working directory does not exist: ${WORKING_DIR}"
+    exit 1
+fi
+
+if [[ ! -f "${MODEL}" ]]; then
+    echo "ERROR: model does not exist: ${MODEL}"
+    exit 1
+fi
+
+MAX_FRAMES_ARG=()
+if [[ -n "${MAX_FRAMES}" ]]; then
+    MAX_FRAMES_ARG=(--max-frames "${MAX_FRAMES}")
+fi
+
+python "${PROJECT_DIR}/bee_tag_model_cpu_parallel_8.py" \
+    --working-dir "${WORKING_DIR}" \
+    --model "${MODEL}" \
+    --output-root "${OUTPUT_ROOT}" \
+    --workers "${N_WORKERS}" \
+    --limit-videos "${LIMIT_VIDEOS}" \
+    --frame-interval "${FRAME_INTERVAL}" \
+    --video-crop-size "${VIDEO_CROP_SIZE}" \
+    --likelihood-threshold "${LIKELIHOOD_THRESHOLD}" \
+    --confidence-threshold "${CONFIDENCE_THRESHOLD}" \
+    --batch-size "${BATCH_SIZE}" \
+    "${MAX_FRAMES_ARG[@]}"
+
+# Preserve the worker's normal output for skip detection.
+# Also create the requested copy ending in "_1interval.csv".
+find "${OUTPUT_ROOT}" \
+    -type f \
+    -name "*_final_with_model_head_tail.csv" \
+    -print0 |
+while IFS= read -r -d '' csv_file; do
+    interval_file="${csv_file%.csv}_1interval.csv"
+    cp -p "${csv_file}" "${interval_file}"
+    echo "Created: ${interval_file}"
+done
+
+echo "============================================================"
+echo "Finished: $(date)"
+echo "============================================================"
